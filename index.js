@@ -126,45 +126,20 @@ async function configurarTiposDeOrden(page) {
 
   await abrirParametros(page);
 
-  // Click en "Avanzado" de Tipos de orden
-  // Buscar el link "Avanzado" que está cerca del label "Tipos de orden"
+  // Click en "Avanzado" de Tipos de orden — es el índice 6 (grandparent: 'Tipos de orden\nAvanzado')
   const advResult = await page.evaluate(() => {
-    // Estrategia: buscar el elemento que contiene "Tipos de orden" y luego
-    // encontrar el link "Avanzado" más cercano
-    const allEls = Array.from(document.querySelectorAll('*'));
-    const tiposOrdenLabel = allEls.find(el =>
-      el.children.length === 0 &&
-      (el.innerText?.trim() === 'Tipos de orden' || el.innerText?.trim() === 'Order Type')
-    );
-
-    if (tiposOrdenLabel) {
-      // Buscar el Avanzado más cercano después del label
-      let current = tiposOrdenLabel;
-      for (let i = 0; i < 10; i++) {
-        current = current.nextElementSibling || current.parentElement?.nextElementSibling;
-        if (!current) break;
-        const advLink = current.querySelector?.('a, button, span') ||
-          (current.innerText?.trim() === 'Avanzado' ? current : null);
-        const links = Array.from(current.querySelectorAll?.('a, span, button') || [])
-          .filter(l => l.innerText?.trim() === 'Avanzado');
-        if (links.length > 0) { links[0].click(); return { clicked: true, method: 'sibling' }; }
-      }
-    }
-
-    // Fallback: buscar todos los Avanzado y loggear su contexto para debug
     const links = Array.from(document.querySelectorAll('a, button, span')).filter(el =>
       el.innerText?.trim() === 'Avanzado' && el.getBoundingClientRect().width > 0
     );
-    const contexts = links.map((l, i) => {
-      const parent = l.closest('[class*="param"], [class*="filter"], div');
-      return { i, parentText: parent?.innerText?.trim().substring(0, 60) };
+    // Buscar por grandparent que contenga "Tipos de orden"
+    const byContext = links.find(el => {
+      const gp = el.parentElement?.parentElement?.innerText?.trim() || '';
+      return gp.includes('Tipos de orden') || gp.includes('Order Type');
     });
-    // Click el que tiene "Tipos de orden" en su contexto
-    const tiposIdx = contexts.findIndex(c => c.parentText?.includes('Tipos de orden') || c.parentText?.includes('Order Type'));
-    if (tiposIdx >= 0) { links[tiposIdx].click(); return { clicked: true, method: 'context', idx: tiposIdx }; }
-    // Último recurso: el índice 3 (0-based)
-    if (links[3]) { links[3].click(); return { clicked: true, method: 'index3', total: links.length, contexts }; }
-    return { clicked: false, contexts };
+    if (byContext) { byContext.click(); return { clicked: true, method: 'grandparent' }; }
+    // Fallback: índice 6
+    if (links[6]) { links[6].click(); return { clicked: true, method: 'index6' }; }
+    return { clicked: false, total: links.length };
   });
   console.log('🔍 Click Avanzado tipos orden:', JSON.stringify(advResult));
   await sleep(3000);
@@ -196,27 +171,57 @@ async function configurarTiposDeOrden(page) {
 
   // El modal de tipos de orden tiene un searchselect — necesitamos abrirlo y seleccionar
   // Usamos el mismo patrón del otro reporte: abrir dropdown y clickear por aria-label
-  // El modal de tipos de orden avanzado usa el mismo oj-listview que el de centros de venta
-  // El input se abre con click y muestra LI con clase oj-listview-item-element
-  // Encontrar el input del modal de tipos de orden
-  const orderTypeInputId = await page.evaluate(() => {
+  // Ver qué inputs y elementos hay en el modal de tipos de orden
+  const modalInputs = await page.evaluate(() => {
     const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
-      .filter(el => el.getBoundingClientRect().width > 0);
-    // Log all visible inputs for debug
-    return inputs.map(el => ({ id: el.id, w: Math.round(el.getBoundingClientRect().width) }));
+      .filter(el => el.getBoundingClientRect().width > 0)
+      .map(el => ({ id: el.id, w: Math.round(el.getBoundingClientRect().width) }));
+    // También buscar el botón "Seleccionar tipos de orden" u otro trigger
+    const triggers = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+      .filter(el => el.getBoundingClientRect().width > 0 && el.innerText?.trim())
+      .map(el => ({ tag: el.tagName, text: el.innerText?.trim().substring(0,50), id: el.id }))
+      .filter(el => !['Cerrar','Cancelar','Aplicar','Ejecutar','Editar parámetros','Valor por defecto','Navegación de aplicación'].includes(el.text));
+    return { inputs, triggers: triggers.slice(0, 10) };
   });
-  console.log('🔍 Inputs visibles en modal tipos orden:', JSON.stringify(orderTypeInputId));
+  console.log('🔍 Modal tipos orden estado:', JSON.stringify(modalInputs));
 
-  // The order type searchselect input ID
-  const otInputId = orderTypeInputId.length > 0 ? orderTypeInputId[orderTypeInputId.length - 1].id : null;
-  console.log('🔍 Usando input:', otInputId);
-
+  // The order types advanced modal uses a listbox — open it and select options
+  // Try to find and click the input/trigger for the order type selector
   for (const ot of ORDER_TYPES) {
-    if (otInputId) {
-      const result = await selectSearchOption(page, otInputId, ot);
-      console.log(`  📌 ${ot}:`, result);
-    }
-    await sleep(500);
+    // Open the dropdown — click the last visible combobox input (the one in the modal)
+    await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
+        .filter(el => el.getBoundingClientRect().width > 0);
+      const last = inputs[inputs.length - 1];
+      if (last) {
+        last.focus();
+        last.click();
+        last.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        last.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        last.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      }
+    });
+    await sleep(1200);
+
+    // Click the option
+    const result = await page.evaluate((target) => {
+      // Look for oj-listview items (same as RVC dropdown)
+      const lis = Array.from(document.querySelectorAll('.oj-listview-item-element, li'))
+        .filter(el => el.getBoundingClientRect().height > 0 && el.innerText?.trim() === target);
+      if (lis.length > 0) { lis[0].click(); return { clicked: true, method: 'listview' }; }
+
+      // Also try aria-label
+      const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
+        .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
+      if (byLabel) { byLabel.click(); return { clicked: true, method: 'aria-label' }; }
+
+      const available = Array.from(document.querySelectorAll('.oj-listview-item-element, li'))
+        .filter(el => el.getBoundingClientRect().height > 0)
+        .map(el => el.innerText?.trim()).filter(Boolean).slice(0, 10);
+      return { clicked: false, available };
+    }, ot);
+    console.log(`  📌 ${ot}:`, result);
+    await sleep(800);
   }
 
   // Click en "Aplicar"
