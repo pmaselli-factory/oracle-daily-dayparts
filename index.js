@@ -246,17 +246,87 @@ async function configurarTiposDeOrden(page) {
   await sleep(4000);
 }
 
+// ── SELECCIONAR TIPOS DE ORDEN EN PARAMETROS ─────────────────
+async function seleccionarTiposDeOrden(page) {
+  // Click "Avanzado" de Tipos de orden
+  await page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll('a, button, span')).filter(el =>
+      el.innerText?.trim() === 'Avanzado' && el.getBoundingClientRect().width > 0
+    );
+    const byContext = links.find(el => {
+      const gp = el.parentElement?.parentElement?.innerText?.trim() || '';
+      return gp.includes('Tipos de orden') || gp.includes('Order Type');
+    });
+    if (byContext) byContext.click();
+    else if (links[6]) links[6].click();
+  });
+  await sleep(2000);
+
+  // Seleccionar cada tipo de orden
+  for (const ot of ORDER_TYPES) {
+    // Click en ul.oj-select-choices para abrir dropdown
+    await page.evaluate(() => {
+      const ul = document.querySelector('#order_type_advance_selectMany_report-filter-order-type .oj-select-choices');
+      if (ul) {
+        ul.click();
+        ul.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        ul.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      }
+    });
+    await sleep(1000);
+
+    // Escribir para filtrar
+    await page.evaluate((target) => {
+      const input = document.querySelector('.oj-listbox-drop:not([style*="display: none"]) .oj-listbox-input, .oj-listbox-input');
+      if (!input) return;
+      input.focus();
+      input.value = '';
+      for (const ch of target) {
+        input.value += ch;
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ch }));
+        input.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: ch }));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ch }));
+      }
+    }, ot);
+    await sleep(1000);
+
+    // Clickear opción
+    await page.evaluate((target) => {
+      const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
+        .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
+      if (byLabel) { const li = byLabel.closest('li') || byLabel; li.click(); byLabel.click(); return; }
+      const lis = Array.from(document.querySelectorAll('li'))
+        .filter(el => el.getBoundingClientRect().height > 0 && el.innerText?.trim() === target);
+      if (lis.length > 0) lis[0].click();
+    }, ot);
+    await sleep(600);
+  }
+
+  // Click "Aplicar" en el modal de tipos de orden
+  await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('button'));
+    const apply = btns.find(b => b.innerText?.trim() === 'Aplicar' || b.innerText?.trim() === 'Apply');
+    if (apply) apply.click();
+  });
+  await sleep(1500);
+}
+
 // ── SELECCIONAR CENTRO Y EJECUTAR ─────────────────────────────
 async function seleccionarCentroYEjecutar(page, centro) {
   console.log(`🏪 Centro: ${centro}`);
 
   await abrirParametros(page);
 
-  // Usar el searchselect de Centros de venta: id="search_rvc_select|input"
+  // 1. Seleccionar centro de venta
   const result = await selectSearchOption(page, 'search_rvc_select|input', centro);
   console.log(`  RVC set:`, result);
 
-  // Ejecutar
+  // 2. Configurar tipos de orden (cada vez para que no se resetee)
+  await seleccionarTiposDeOrden(page);
+  console.log(`  ✅ Tipos de orden aplicados`);
+
+  // 3. Ejecutar
   await page.evaluate(() => {
     const btns = Array.from(document.querySelectorAll('button'));
     const run = btns.find(b => b.innerText?.trim() === 'Ejecutar');
@@ -329,10 +399,7 @@ async function run() {
     await sleep(4000);
     console.log('✅ Reporte abierto');
 
-    // Configurar tipos de orden UNA VEZ
-    await configurarTiposDeOrden(page);
-
-    // Iterar centros de venta
+    // Iterar centros de venta (tipos de orden se configuran en cada iteración)
     for (const centro of CENTROS) {
       console.log(`\n━━━ ${centro} ━━━`);
       await seleccionarCentroYEjecutar(page, centro);
