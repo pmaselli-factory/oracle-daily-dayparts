@@ -72,47 +72,36 @@ async function login(page) {
 // ── SELECCIONAR OPCIÓN EN SEARCHSELECT ────────────────────────
 // Oracle JET oj-searchselect: click input → escribir → esperar dropdown → click opción
 async function selectSearchOption(page, inputId, optionText) {
-  // Click via JS to bypass Oracle JET overlay
-  const opened = await page.evaluate((id) => {
-    const el = document.getElementById(id);
-    if (!el) return { found: false };
-    el.click();
-    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    return { found: true };
-  }, inputId);
-  await sleep(800);
-
-  // Type to filter using keyboard events via JS
-  await page.evaluate(({ id, text }) => {
+  // Step 1: click input via JS to open dropdown (bypasses Oracle JET overlay)
+  await page.evaluate((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.focus();
-    el.value = text.substring(0, 4);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: text[0] }));
-    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: text[0] }));
-  }, { id: inputId, text: optionText });
-  await sleep(2000);
+    el.click();
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }, inputId);
+  await sleep(1500);
 
-  // Find and click the option
+  // Step 2: click the LI option in the lovDropdown
   const clicked = await page.evaluate((text) => {
-    // Look in lovDropdown which is the Oracle JET LOV dropdown
-    const lovDropdowns = document.querySelectorAll('[id*="lovDropdown"], [class*="oj-listview"], [class*="oj-select-results"]');
-    for (const dropdown of lovDropdowns) {
-      const opts = Array.from(dropdown.querySelectorAll('li, div, [role="option"]'));
-      const opt = opts.find(o => o.innerText?.trim() === text);
-      if (opt) { opt.click(); return { clicked: true, method: 'lovDropdown' }; }
+    // The dropdown is lovDropdown_search_rvc_select
+    const lis = Array.from(document.querySelectorAll('.oj-listview-item-element, li'))
+      .filter(el => el.getBoundingClientRect().height > 0 && el.innerText?.trim() === text);
+    if (lis.length > 0) {
+      lis[0].click();
+      return { clicked: true, method: 'oj-listview-item-element' };
     }
-    // Fallback: search all visible options
-    const allOpts = Array.from(document.querySelectorAll('[role="option"], li'))
+    // Fallback: any visible li with matching text
+    const allLis = Array.from(document.querySelectorAll('li'))
       .filter(el => el.getBoundingClientRect().height > 0);
-    const opt = allOpts.find(o => o.innerText?.trim() === text);
-    if (opt) { opt.click(); return { clicked: true, method: 'fallback', text: opt.innerText?.trim() }; }
-    return { clicked: false, available: allOpts.map(o => o.innerText?.trim()).filter(Boolean).slice(0,8) };
+    const opt = allLis.find(el => el.innerText?.trim() === text);
+    if (opt) { opt.click(); return { clicked: true, method: 'li-fallback' }; }
+    return { clicked: false, available: allLis.map(el => el.innerText?.trim()).filter(Boolean).slice(0, 10) };
   }, optionText);
 
-  await sleep(500);
+  await sleep(800);
   return clicked;
 }
 
@@ -207,51 +196,27 @@ async function configurarTiposDeOrden(page) {
 
   // El modal de tipos de orden tiene un searchselect — necesitamos abrirlo y seleccionar
   // Usamos el mismo patrón del otro reporte: abrir dropdown y clickear por aria-label
-  // Log what's visible in the order type modal now
-  const modalDebug = await page.evaluate(() => {
+  // El modal de tipos de orden avanzado usa el mismo oj-listview que el de centros de venta
+  // El input se abre con click y muestra LI con clase oj-listview-item-element
+  // Encontrar el input del modal de tipos de orden
+  const orderTypeInputId = await page.evaluate(() => {
     const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
-      .filter(el => el.getBoundingClientRect().width > 0)
-      .map(el => ({ id: el.id, w: Math.round(el.getBoundingClientRect().width) }));
-    const visible = Array.from(document.querySelectorAll('[aria-label]'))
-      .filter(el => el.getBoundingClientRect().width > 0)
-      .map(el => el.getAttribute('aria-label')).filter(Boolean).slice(0, 15);
-    return { inputs, visible };
+      .filter(el => el.getBoundingClientRect().width > 0);
+    // Log all visible inputs for debug
+    return inputs.map(el => ({ id: el.id, w: Math.round(el.getBoundingClientRect().width) }));
   });
-  console.log('🔍 Modal estado actual:', JSON.stringify(modalDebug));
+  console.log('🔍 Inputs visibles en modal tipos orden:', JSON.stringify(orderTypeInputId));
+
+  // The order type searchselect input ID
+  const otInputId = orderTypeInputId.length > 0 ? orderTypeInputId[orderTypeInputId.length - 1].id : null;
+  console.log('🔍 Usando input:', otInputId);
 
   for (const ot of ORDER_TYPES) {
-    // El modal de tipos de orden avanzado tiene un oj-listbox con las opciones
-    // Primero hacer click en el input del modal para abrir el dropdown
-    await page.evaluate(() => {
-      // Buscar el input más ancho que no sea el de la página principal
-      const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
-        .filter(el => el.getBoundingClientRect().width > 150);
-      // Ordenar por z-index / posición en pantalla — el del modal estará al frente
-      const last = inputs[inputs.length - 1];
-      if (last) last.click();
-    });
-    await sleep(1000);
-
-    // Clickear la opción en el dropdown abierto
-    const result = await page.evaluate((target) => {
-      // Buscar en el listbox de Oracle JET por aria-label
-      const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
-        .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
-      if (byLabel) { byLabel.click(); return { clicked: true, method: 'aria-label' }; }
-
-      // Buscar por texto exacto
-      const byText = Array.from(document.querySelectorAll('li, div'))
-        .find(el => el.innerText?.trim() === target && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
-      if (byText) { byText.click(); return { clicked: true, method: 'text', tag: byText.tagName }; }
-
-      // Debug: qué hay disponible
-      const available = Array.from(document.querySelectorAll('[aria-label]'))
-        .filter(el => el.getBoundingClientRect().width > 0)
-        .map(el => el.getAttribute('aria-label')).filter(Boolean);
-      return { clicked: false, available: available.slice(0, 10) };
-    }, ot);
-    console.log(`  📌 ${ot}:`, result);
-    await sleep(800);
+    if (otInputId) {
+      const result = await selectSearchOption(page, otInputId, ot);
+      console.log(`  📌 ${ot}:`, result);
+    }
+    await sleep(500);
   }
 
   // Click en "Aplicar"
