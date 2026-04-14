@@ -83,7 +83,7 @@ async function selectSearchOption(page, inputId, optionText) {
   await sleep(800);
 
   // Type to filter using keyboard events via JS
-  await page.evaluate((id, text) => {
+  await page.evaluate(({ id, text }) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.focus();
@@ -92,7 +92,7 @@ async function selectSearchOption(page, inputId, optionText) {
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: text[0] }));
     el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: text[0] }));
-  }, inputId, optionText);
+  }, { id: inputId, text: optionText });
   await sleep(2000);
 
   // Find and click the option
@@ -137,18 +137,47 @@ async function configurarTiposDeOrden(page) {
 
   await abrirParametros(page);
 
-  // Click en "Avanzado" de Tipos de orden (4to Avanzado del modal)
+  // Click en "Avanzado" de Tipos de orden
+  // Buscar el link "Avanzado" que está cerca del label "Tipos de orden"
   const advResult = await page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll('a, button, span')).filter(el =>
-      (el.innerText?.trim() === 'Avanzado' || el.innerText?.trim() === 'Advanced') &&
-      el.getBoundingClientRect().width > 0
+    // Estrategia: buscar el elemento que contiene "Tipos de orden" y luego
+    // encontrar el link "Avanzado" más cercano
+    const allEls = Array.from(document.querySelectorAll('*'));
+    const tiposOrdenLabel = allEls.find(el =>
+      el.children.length === 0 &&
+      (el.innerText?.trim() === 'Tipos de orden' || el.innerText?.trim() === 'Order Type')
     );
-    // Orden modal: Fechas negocio(0), Ubicaciones(1), Centros venta(2), Tipos orden(3)
-    const target = links[3];
-    if (target) { target.click(); return { clicked: true, total: links.length }; }
-    return { clicked: false, total: links.length };
+
+    if (tiposOrdenLabel) {
+      // Buscar el Avanzado más cercano después del label
+      let current = tiposOrdenLabel;
+      for (let i = 0; i < 10; i++) {
+        current = current.nextElementSibling || current.parentElement?.nextElementSibling;
+        if (!current) break;
+        const advLink = current.querySelector?.('a, button, span') ||
+          (current.innerText?.trim() === 'Avanzado' ? current : null);
+        const links = Array.from(current.querySelectorAll?.('a, span, button') || [])
+          .filter(l => l.innerText?.trim() === 'Avanzado');
+        if (links.length > 0) { links[0].click(); return { clicked: true, method: 'sibling' }; }
+      }
+    }
+
+    // Fallback: buscar todos los Avanzado y loggear su contexto para debug
+    const links = Array.from(document.querySelectorAll('a, button, span')).filter(el =>
+      el.innerText?.trim() === 'Avanzado' && el.getBoundingClientRect().width > 0
+    );
+    const contexts = links.map((l, i) => {
+      const parent = l.closest('[class*="param"], [class*="filter"], div');
+      return { i, parentText: parent?.innerText?.trim().substring(0, 60) };
+    });
+    // Click el que tiene "Tipos de orden" en su contexto
+    const tiposIdx = contexts.findIndex(c => c.parentText?.includes('Tipos de orden') || c.parentText?.includes('Order Type'));
+    if (tiposIdx >= 0) { links[tiposIdx].click(); return { clicked: true, method: 'context', idx: tiposIdx }; }
+    // Último recurso: el índice 3 (0-based)
+    if (links[3]) { links[3].click(); return { clicked: true, method: 'index3', total: links.length, contexts }; }
+    return { clicked: false, contexts };
   });
-  console.log('🔍 Click Avanzado tipos orden:', advResult);
+  console.log('🔍 Click Avanzado tipos orden:', JSON.stringify(advResult));
   await sleep(3000);
 
   // Hacer el segundo modal (de tipos de orden) visible
@@ -178,34 +207,48 @@ async function configurarTiposDeOrden(page) {
 
   // El modal de tipos de orden tiene un searchselect — necesitamos abrirlo y seleccionar
   // Usamos el mismo patrón del otro reporte: abrir dropdown y clickear por aria-label
+  // Log what's visible in the order type modal now
+  const modalDebug = await page.evaluate(() => {
+    const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
+      .filter(el => el.getBoundingClientRect().width > 0)
+      .map(el => ({ id: el.id, w: Math.round(el.getBoundingClientRect().width) }));
+    const visible = Array.from(document.querySelectorAll('[aria-label]'))
+      .filter(el => el.getBoundingClientRect().width > 0)
+      .map(el => el.getAttribute('aria-label')).filter(Boolean).slice(0, 15);
+    return { inputs, visible };
+  });
+  console.log('🔍 Modal estado actual:', JSON.stringify(modalDebug));
+
   for (const ot of ORDER_TYPES) {
-    // Abrir el dropdown del modal (click en el área de selección)
+    // El modal de tipos de orden avanzado tiene un oj-listbox con las opciones
+    // Primero hacer click en el input del modal para abrir el dropdown
     await page.evaluate(() => {
-      const triggers = Array.from(document.querySelectorAll(
-        '.oj-listbox-choice, .oj-select-choice, [class*="oj-searchselect-input"], input[role="combobox"]'
-      )).filter(el => {
-        const rect = el.getBoundingClientRect();
-        return rect.width > 100; // El input del modal es más ancho
-      });
-      // El último combobox visible debería ser el del modal de tipos de orden
-      const trigger = triggers[triggers.length - 1];
-      if (trigger) trigger.click();
+      // Buscar el input más ancho que no sea el de la página principal
+      const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
+        .filter(el => el.getBoundingClientRect().width > 150);
+      // Ordenar por z-index / posición en pantalla — el del modal estará al frente
+      const last = inputs[inputs.length - 1];
+      if (last) last.click();
     });
     await sleep(1000);
 
-    // Clickear la opción
+    // Clickear la opción en el dropdown abierto
     const result = await page.evaluate((target) => {
-      // Buscar en listbox abierto por aria-label
+      // Buscar en el listbox de Oracle JET por aria-label
       const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
         .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
       if (byLabel) { byLabel.click(); return { clicked: true, method: 'aria-label' }; }
 
-      // Buscar en listbox por texto
-      const byText = Array.from(document.querySelectorAll('.oj-listbox-result-selectable, [role="option"], li'))
-        .find(el => el.innerText?.trim() === target && el.getBoundingClientRect().width > 0);
-      if (byText) { byText.click(); return { clicked: true, method: 'text' }; }
+      // Buscar por texto exacto
+      const byText = Array.from(document.querySelectorAll('li, div'))
+        .find(el => el.innerText?.trim() === target && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
+      if (byText) { byText.click(); return { clicked: true, method: 'text', tag: byText.tagName }; }
 
-      return { clicked: false, debug: Array.from(document.querySelectorAll('[aria-label]')).filter(el => el.getBoundingClientRect().width > 0).map(el => el.getAttribute('aria-label')).slice(0,10) };
+      // Debug: qué hay disponible
+      const available = Array.from(document.querySelectorAll('[aria-label]'))
+        .filter(el => el.getBoundingClientRect().width > 0)
+        .map(el => el.getAttribute('aria-label')).filter(Boolean);
+      return { clicked: false, available: available.slice(0, 10) };
     }, ot);
     console.log(`  📌 ${ot}:`, result);
     await sleep(800);
