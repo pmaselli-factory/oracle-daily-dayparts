@@ -279,50 +279,54 @@ async function seleccionarTiposDeOrden(page) {
   await page.mouse.click(ulCoords.x, ulCoords.y);
   await sleep(1500);
 
-  // 3. Clickear SOLO las opciones válidas (CornerShop, Local, OT17578, OT17579, OT17580)
-  // CornerShop/Local están al tope, OT17578/79/80 están al fondo
-  const TOP_OPTIONS = new Set(['Local']);
+  // 3. Abrir dropdown y mapear TODAS las opciones de una vez
+  // Luego clickear las que necesitamos (sin cerrar/reabrir entre cada una)
+  
+  // Abrir dropdown
+  await page.mouse.click(ulCoords.x, ulCoords.y);
+  await sleep(1200);
 
-  for (const ot of VALID_ORDER_TYPES) {
-    // Abrir dropdown
+  // Primero obtener coords de Local (al tope, sin scroll)
+  const localCoords = await page.evaluate(() => {
+    const dropdown = document.querySelector('.oj-listbox-drop');
+    if (!dropdown) return null;
+    const li = Array.from(dropdown.querySelectorAll('li'))
+      .find(el => el.innerText?.trim() === 'Local' && el.getBoundingClientRect().height > 20);
+    if (!li) return null;
+    const r = li.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+  });
+
+  if (localCoords) {
+    await page.mouse.click(localCoords.x, localCoords.y);
+    console.log(`  📌 Local: (${localCoords.x}, ${localCoords.y})`);
+    await sleep(800);
+  } else {
+    console.log(`  ⚠️ No encontró Local`);
+  }
+
+  // Reabrir dropdown y hacer scroll al fondo para OT*
+  for (const ot of ['OT17578', 'OT17579', 'OT17580']) {
     await page.mouse.click(ulCoords.x, ulCoords.y);
-    await sleep(1000);
+    await sleep(800);
 
-    // Scroll: al fondo para OT*, al tope para otros
-    await page.evaluate((scrollToBottom) => {
-      const dropdown = document.querySelector('.oj-listbox-drop .oj-listbox-results');
-      if (dropdown) dropdown.scrollTop = scrollToBottom ? 99999 : 0;
-    }, ot.startsWith('OT'));
-    await sleep(600);
+    // Scroll al fondo
+    await page.evaluate(() => {
+      const results = document.querySelector('.oj-listbox-drop .oj-listbox-results');
+      if (results) results.scrollTop = 99999;
+    });
+    await sleep(500);
 
-    // Buscar la opción en el dropdown — priorizar LI con texto exacto
+    // Buscar y clickear la última coincidencia visible
     const optCoords = await page.evaluate((target) => {
       const dropdown = document.querySelector('.oj-listbox-drop');
       if (!dropdown) return null;
-
-      // Buscar LI primero (elemento clickeable real)
-      const lis = Array.from(dropdown.querySelectorAll('li')).filter(el => {
-        const rect = el.getBoundingClientRect();
-        return el.innerText?.trim() === target && rect.width > 0 && rect.height > 20;
-      });
-      if (lis.length > 0) {
-        const opt = target.startsWith('OT') ? lis[lis.length - 1] : lis[0];
-        const r = opt.getBoundingClientRect();
-        return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: lis.length, method: 'li' };
-      }
-
-      // Fallback: div con aria-label
-      const divs = Array.from(dropdown.querySelectorAll('[aria-label]')).filter(el => {
-        const rect = el.getBoundingClientRect();
-        return el.getAttribute('aria-label') === target && rect.width > 0 && rect.height > 0;
-      });
-      if (divs.length > 0) {
-        const opt = target.startsWith('OT') ? divs[divs.length - 1] : divs[0];
-        const r = opt.getBoundingClientRect();
-        return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: divs.length, method: 'div' };
-      }
-
-      return null;
+      const lis = Array.from(dropdown.querySelectorAll('li'))
+        .filter(el => el.innerText?.trim() === target && el.getBoundingClientRect().height > 20);
+      if (lis.length === 0) return null;
+      const opt = lis[lis.length - 1];
+      const r = opt.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: lis.length };
     }, ot);
 
     if (optCoords) {
