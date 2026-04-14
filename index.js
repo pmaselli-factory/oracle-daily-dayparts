@@ -14,7 +14,6 @@ const MAIL_FROM    = 'pmaselli@factorynine.cl';
 const MAIL_TO      = 'pmaselli@factorynine.cl';
 const DOWNLOAD_DIR = path.join(__dirname, 'downloads_dayparts');
 
-// Centros de venta — "Todos" primero, luego cada tienda
 const CENTROS = [
   'Todos',
   'Lc Chicureo',
@@ -33,30 +32,26 @@ const CENTROS = [
 ];
 
 // Tipos de orden a seleccionar (todos menos Good Meal)
-const ORDER_TYPES_TO_SELECT = [
-  'CornerShop',
-  'Local',
-  'OT17578',
-  'OT17579',
-  'OT17580',
-];
+const ORDER_TYPES = ['CornerShop', 'Local', 'OT17578', 'OT17579', 'OT17580'];
 
-// ── HELPERS ───────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function getChileDate() {
   const now = new Date();
-  const chileOffset = -4 * 60;
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-  return new Date(utcMs + chileOffset * 60000);
+  return new Date(utcMs + (-4 * 60) * 60000);
 }
 
 function getWeekLabel() {
-  const today = getChileDate();
-  const dd = String(today.getDate()).padStart(2, '0');
-  const mm = String(today.getMonth() + 1).padStart(2, '0');
-  const yyyy = today.getFullYear();
-  return `${dd}-${mm}-${yyyy}`;
+  const d = getChileDate();
+  return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+}
+
+function safeName(str) {
+  return str
+    .replace(/Ñ/g,'N').replace(/ñ/g,'n')
+    .replace(/é/g,'e').replace(/ó/g,'o').replace(/á/g,'a').replace(/í/g,'i').replace(/ú/g,'u')
+    .replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_]/g,'');
 }
 
 // ── LOGIN ─────────────────────────────────────────────────────
@@ -64,31 +59,60 @@ async function login(page) {
   console.log('🔐 Navegando a Oracle...');
   await page.goto(ORACLE_URL, { waitUntil: 'networkidle' });
   await sleep(3000);
-
   const allInputs = page.locator('input');
   await allInputs.nth(0).fill(ORACLE_USER);
   await allInputs.nth(1).fill(ORACLE_ENT);
   await allInputs.nth(2).fill(ORACLE_PASS);
-
   await page.locator('button:has-text("Sign In"), input[type="submit"]').first().click();
   await page.waitForLoadState('networkidle');
   await sleep(2000);
   console.log('✅ Login completado');
 }
 
-// ── ABRIR REPORTE ─────────────────────────────────────────────
-async function openReport(page) {
-  console.log('📂 Abriendo reporte dayparts...');
-  await page.goto(REPORT_URL, { waitUntil: 'networkidle' });
-  await sleep(4000);
-  console.log('✅ Reporte abierto');
+// ── SELECCIONAR OPCIÓN EN SEARCHSELECT ────────────────────────
+// Oracle JET oj-searchselect: click input → escribir → esperar dropdown → click opción
+async function selectSearchOption(page, inputId, optionText) {
+  const input = page.locator(`#${CSS.escape(inputId)}`);
+  await input.waitFor({ timeout: 8000 });
+
+  // Click para abrir el dropdown
+  await input.click();
+  await sleep(800);
+
+  // Limpiar y escribir el texto para filtrar
+  await input.fill('');
+  await input.type(optionText.substring(0, 4), { delay: 100 });
+  await sleep(1000);
+
+  // Buscar y clickear la opción en el dropdown
+  const clicked = await page.evaluate((text) => {
+    // Buscar en el dropdown abierto
+    const opts = Array.from(document.querySelectorAll(
+      '[role="option"], .oj-listbox-result-selectable, .oj-searchselect-option'
+    ));
+    const opt = opts.find(o =>
+      o.innerText?.trim() === text ||
+      o.getAttribute('aria-label') === text
+    );
+    if (opt) { opt.click(); return { clicked: true, text: opt.innerText?.trim() }; }
+
+    // Fallback: buscar divs con aria-label
+    const divs = Array.from(document.querySelectorAll('[aria-label]'));
+    const d = divs.find(el =>
+      el.getAttribute('aria-label') === text &&
+      el.getBoundingClientRect().width > 0
+    );
+    if (d) { d.click(); return { clicked: true, byLabel: true }; }
+
+    return { clicked: false, available: opts.map(o => o.innerText?.trim()).slice(0,10) };
+  }, optionText);
+
+  await sleep(500);
+  return clicked;
 }
 
-// ── CONFIGURAR TIPOS DE ORDEN (solo la primera vez) ───────────
-async function configurarTiposDeOrden(page) {
-  console.log('⚙️  Configurando tipos de orden...');
-
-  // Cerrar overlays
+// ── ABRIR MODAL DE PARÁMETROS ─────────────────────────────────
+async function abrirParametros(page) {
   await page.evaluate(() => {
     document.querySelectorAll('.oj-dialog-layer, .oj-component-overlay').forEach(el => {
       el.style.display = 'none';
@@ -96,27 +120,29 @@ async function configurarTiposDeOrden(page) {
   });
   await sleep(500);
 
-  // Click en "Editar parámetros"
   const editBtn = page.locator('[aria-label="Editar parámetros"], [aria-label="Edit parameters"]').first();
   await editBtn.waitFor({ timeout: 10000 });
   await editBtn.evaluate(el => el.click());
   await sleep(2000);
-  console.log('✅ Parámetros abiertos');
+}
 
-  // Click en "Avanzado" de Tipos de orden (el 4to link Avanzado)
+// ── CONFIGURAR TIPOS DE ORDEN (solo primera vez) ──────────────
+async function configurarTiposDeOrden(page) {
+  console.log('⚙️  Configurando tipos de orden (excluir Good Meal)...');
+
+  await abrirParametros(page);
+
+  // Click en "Avanzado" de Tipos de orden
+  // Es el 4to link "Avanzado" del modal
   await page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll('a'));
-    const advLinks = links.filter(l =>
-      l.innerText?.trim() === 'Avanzado' || l.innerText?.trim() === 'Advanced'
+    const links = Array.from(document.querySelectorAll('a, button, span')).filter(el =>
+      (el.innerText?.trim() === 'Avanzado' || el.innerText?.trim() === 'Advanced') &&
+      el.getBoundingClientRect().width > 0
     );
-    // El de Tipos de orden es el último
-    const target = advLinks[advLinks.length - 1];
-    if (target) {
-      target.removeAttribute('hidden');
-      target.style.display = '';
-      target.style.visibility = 'visible';
-      target.click();
-    }
+    // El de Tipos de orden es el 4to (índice 3)
+    // Orden: Fechas negocio, Ubicaciones, Centros venta, Tipos orden
+    const target = links[3];
+    if (target) target.click();
   });
   await sleep(2000);
   console.log('✅ Modal Tipos de orden abierto');
@@ -124,54 +150,40 @@ async function configurarTiposDeOrden(page) {
   // Hacer dialogs visibles
   await page.evaluate(() => {
     document.querySelectorAll('[id*="dialog"], [class*="dialog"], [role="dialog"]').forEach(d => {
-      d.style.display = 'block';
-      d.style.visibility = 'visible';
-      d.style.opacity = '1';
-      d.style.position = 'fixed';
-      d.style.top = '0';
-      d.style.left = '0';
-      d.style.zIndex = '99999';
-      d.style.transform = 'none';
-      d.style.overflow = 'visible';
+      d.style.display = 'block'; d.style.visibility = 'visible'; d.style.opacity = '1';
+      d.style.position = 'fixed'; d.style.top = '0'; d.style.left = '0';
+      d.style.zIndex = '99999'; d.style.transform = 'none'; d.style.overflow = 'visible';
     });
   });
   await sleep(500);
 
-  // Seleccionar cada tipo de orden uno por uno
-  for (const orderType of ORDER_TYPES_TO_SELECT) {
-    // Abrir el desplegable
-    const dropdownOpened = await page.evaluate(() => {
-      // Buscar el botón/input que abre el desplegable de tipos de orden
-      const triggers = Array.from(document.querySelectorAll('.oj-listbox-choice, [aria-label*="Seleccionar"], .oj-select-choice'));
-      const trigger = triggers.find(t => {
-        const rect = t.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      });
-      if (trigger) { trigger.click(); return true; }
-      // Fallback: buscar por placeholder
-      const inputs = Array.from(document.querySelectorAll('input[placeholder], .oj-listbox-input'));
-      const inp = inputs.find(i => i.getBoundingClientRect().width > 0);
-      if (inp) { inp.click(); return true; }
+  // Seleccionar cada tipo de orden usando el searchselect del modal
+  for (const ot of ORDER_TYPES) {
+    // Abrir el desplegable clickeando el área de selección
+    const opened = await page.evaluate(() => {
+      const triggers = Array.from(document.querySelectorAll(
+        '.oj-listbox-choice, .oj-select-chosen, [class*="oj-searchselect"]'
+      )).filter(el => el.getBoundingClientRect().width > 0);
+      if (triggers[0]) { triggers[0].click(); return true; }
       return false;
     });
-    await sleep(1000);
-
-    // Clickear la opción correcta por aria-label
-    const clicked = await page.evaluate((target) => {
-      const divs = Array.from(document.querySelectorAll('[aria-label]'));
-      const opt = divs.find(d => d.getAttribute('aria-label') === target && d.getBoundingClientRect().width > 0);
-      if (opt) {
-        opt.click();
-        return { clicked: true, label: opt.getAttribute('aria-label') };
-      }
-      // Fallback: buscar por texto
-      const lis = Array.from(document.querySelectorAll('.oj-listbox-result-selectable'));
-      const li = lis.find(l => l.innerText?.trim() === target);
-      if (li) { li.click(); return { clicked: true, text: li.innerText?.trim() }; }
-      return { clicked: false, target };
-    }, orderType);
-    console.log(`  📌 Seleccionado: ${orderType} →`, clicked);
     await sleep(800);
+
+    // Clickear la opción por aria-label o texto
+    const result = await page.evaluate((target) => {
+      const allEls = Array.from(document.querySelectorAll(
+        '[aria-label], .oj-listbox-result-selectable, [role="option"]'
+      ));
+      const opt = allEls.find(el => {
+        const label = el.getAttribute('aria-label') || el.innerText?.trim();
+        const rect = el.getBoundingClientRect();
+        return label === target && rect.width > 0;
+      });
+      if (opt) { opt.click(); return { clicked: true, text: opt.getAttribute('aria-label') || opt.innerText?.trim() }; }
+      return { clicked: false };
+    }, ot);
+    console.log(`  📌 ${ot}:`, result);
+    await sleep(600);
   }
 
   // Click en "Aplicar"
@@ -181,66 +193,42 @@ async function configurarTiposDeOrden(page) {
     if (apply) apply.click();
   });
   await sleep(2000);
-  console.log('✅ Tipos de orden configurados y aplicados');
-}
+  console.log('✅ Tipos de orden configurados');
 
-// ── SELECCIONAR CENTRO DE VENTA ───────────────────────────────
-async function seleccionarCentro(page, centro) {
-  console.log(`🏪 Seleccionando centro: ${centro}`);
-
-  // Cerrar overlays
-  await page.evaluate(() => {
-    document.querySelectorAll('.oj-dialog-layer, .oj-component-overlay').forEach(el => {
-      el.style.display = 'none';
-    });
-  });
-  await sleep(500);
-
-  // Click en "Editar parámetros"
-  const editBtn = page.locator('[aria-label="Editar parámetros"], [aria-label="Edit parameters"]').first();
-  await editBtn.waitFor({ timeout: 10000 });
-  await editBtn.evaluate(el => el.click());
-  await sleep(2000);
-
-  // Seleccionar el centro de venta en el dropdown
-  const centroSet = await page.evaluate((targetCentro) => {
-    const selects = Array.from(document.querySelectorAll('select'));
-    for (const sel of selects) {
-      const opts = Array.from(sel.options).map(o => o.text.trim());
-      if (opts.some(o => o === targetCentro || o.includes('Chicureo') || o.includes('Militares'))) {
-        const opt = Array.from(sel.options).find(o => o.text.trim() === targetCentro);
-        if (opt) {
-          sel.value = opt.value;
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-          sel.dispatchEvent(new Event('input', { bubbles: true }));
-          return { found: true, value: opt.value, text: opt.text };
-        }
-      }
-    }
-    return { found: false };
-  }, centro);
-  console.log(`  Centro set:`, centroSet);
-  await sleep(1000);
-
-  // Click en "Ejecutar"
+  // Ejecutar para que el filtro quede aplicado
   await page.evaluate(() => {
     const btns = Array.from(document.querySelectorAll('button'));
-    const run = btns.find(b =>
-      b.innerText?.trim() === 'Ejecutar' ||
-      b.innerText?.trim() === 'Execute' ||
-      b.innerText?.trim() === 'Run'
-    );
+    const run = btns.find(b => b.innerText?.trim() === 'Ejecutar');
+    if (run) run.click();
+  });
+  await page.waitForLoadState('networkidle');
+  await sleep(4000);
+}
+
+// ── SELECCIONAR CENTRO Y EJECUTAR ─────────────────────────────
+async function seleccionarCentroYEjecutar(page, centro) {
+  console.log(`🏪 Centro: ${centro}`);
+
+  await abrirParametros(page);
+
+  // Usar el searchselect de Centros de venta: id="search_rvc_select|input"
+  const result = await selectSearchOption(page, 'search_rvc_select|input', centro);
+  console.log(`  RVC set:`, result);
+
+  // Ejecutar
+  await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('button'));
+    const run = btns.find(b => b.innerText?.trim() === 'Ejecutar');
     if (run) run.click();
   });
   await page.waitForLoadState('networkidle');
   await sleep(5000);
-  console.log(`✅ Reporte ejecutado para: ${centro}`);
+  console.log(`  ✅ Ejecutado`);
 }
 
 // ── DESCARGAR EXCEL ───────────────────────────────────────────
 async function downloadExcel(page, fileName) {
   console.log(`⬇️  Descargando ${fileName}...`);
-
   const downloadBtn = page.locator('[title="Descargar"], [title="Download"]').first();
   await downloadBtn.waitFor({ timeout: 15000 });
   await downloadBtn.evaluate(el => {
@@ -248,43 +236,32 @@ async function downloadExcel(page, fileName) {
     inner.click();
   });
   await sleep(1500);
-
   const excelOption = page.locator('[role="menuitem"]:has-text("Excel"), li:has-text("Excel"), a:has-text("Excel")').first();
   await excelOption.waitFor({ timeout: 10000 });
-
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     excelOption.evaluate(el => el.click()),
   ]);
-
   const filePath = path.join(DOWNLOAD_DIR, fileName);
   await download.saveAs(filePath);
-  console.log(`✅ Guardado: ${fileName}`);
+  console.log(`  ✅ Guardado: ${fileName}`);
   return filePath;
 }
 
 // ── ENVÍO DE MAIL ─────────────────────────────────────────────
 async function sendMail(files, weekLabel) {
   console.log('📧 Enviando mail...');
-
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    host: 'smtp.gmail.com', port: 465, secure: true,
     auth: { user: MAIL_FROM, pass: GMAIL_PASS },
   });
-
   await transporter.sendMail({
     from: `"Factory Nine · Reportes" <${MAIL_FROM}>`,
     to: MAIL_TO,
-    subject: `Dayparts semana ${weekLabel} · ${files.length} reportes`,
-    text: `Hola,\n\nAdjunto los reportes de "Cantidad de artículos de menú vendida por día hábil" correspondientes a la semana del ${weekLabel}.\n\n• ${files.length} archivos adjuntos (consolidado + ${files.length - 1} tiendas)\n\nEste reporte se genera automáticamente todos los domingos.\n\nFactory Nine`,
-    attachments: files.map(({ filePath, name }) => ({
-      filename: name,
-      path: filePath,
-    })),
+    subject: `Dayparts semana ${weekLabel} · ${files.length} archivos`,
+    text: `Hola,\n\nAdjunto los reportes de dayparts de la semana del ${weekLabel}.\n\n${files.length} archivos adjuntos (consolidado + tiendas)\n\nFactory Nine`,
+    attachments: files.map(f => ({ filename: f.name, path: f.filePath })),
   });
-
   console.log(`✅ Mail enviado con ${files.length} adjuntos`);
 }
 
@@ -293,42 +270,38 @@ async function run() {
   if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
 
   const weekLabel = getWeekLabel();
-  console.log(`📅 Semana: ${weekLabel}`);
-  console.log(`🏪 Centros a procesar: ${CENTROS.length}`);
+  console.log(`📅 Semana: ${weekLabel} · ${CENTROS.length} centros`);
 
-  console.log('🚀 Iniciando browser...');
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
-
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
   const downloadedFiles = [];
 
   try {
     await login(page);
-    await openReport(page);
 
-    // Configurar tipos de orden UNA SOLA VEZ (excluir Good Meal)
+    // Abrir reporte
+    await page.goto(REPORT_URL, { waitUntil: 'networkidle' });
+    await sleep(4000);
+    console.log('✅ Reporte abierto');
+
+    // Configurar tipos de orden UNA VEZ
     await configurarTiposDeOrden(page);
 
-    // Descargar un reporte por cada centro de venta
+    // Iterar centros de venta
     for (const centro of CENTROS) {
       console.log(`\n━━━ ${centro} ━━━`);
-
-      await seleccionarCentro(page, centro);
-
-      const safeName = centro.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-      const fileName = `dayparts_${safeName}_${weekLabel}.xlsx`;
+      await seleccionarCentroYEjecutar(page, centro);
+      const fileName = `dayparts_${safeName(centro)}_${weekLabel}.xlsx`;
       const filePath = await downloadExcel(page, fileName);
       downloadedFiles.push({ filePath, name: fileName });
     }
 
-    // Enviar todo por mail
     await sendMail(downloadedFiles, weekLabel);
 
-    // Limpiar archivos temporales
     for (const f of downloadedFiles) {
       try { if (fs.existsSync(f.filePath)) fs.unlinkSync(f.filePath); } catch(e) {}
     }
@@ -336,14 +309,12 @@ async function run() {
   } catch (err) {
     console.error('❌ Error:', err.message);
     await page.screenshot({ path: 'error-screenshot.png', fullPage: true });
-    console.log('📸 Screenshot guardado');
     throw err;
   } finally {
     await browser.close();
   }
 }
 
-// ── RUN ───────────────────────────────────────────────────────
 run().catch(err => {
   console.error('❌ Script terminó con error:', err.message);
   process.exit(1);
