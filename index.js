@@ -282,16 +282,34 @@ async function seleccionarTiposDeOrden(page) {
   // 3. Abrir dropdown y mapear TODAS las opciones de una vez
   // Luego clickear las que necesitamos (sin cerrar/reabrir entre cada una)
   
-  // Abrir dropdown
+  // Abrir dropdown y esperar a que se renderice
   await page.mouse.click(ulCoords.x, ulCoords.y);
-  await sleep(1200);
+  await sleep(2000);
 
-  // Primero obtener coords de Local (al tope, sin scroll)
+  // Verificar que el dropdown está abierto
+  const dropdownOpen = await page.evaluate(() => {
+    const d = document.querySelector('.oj-listbox-drop');
+    return d ? d.style.display !== 'none' : false;
+  });
+  console.log(`  🔍 Dropdown abierto: ${dropdownOpen}`);
+
+  // Log todos los LI visibles para debug
+  const allLis = await page.evaluate(() => {
+    const dropdown = document.querySelector('.oj-listbox-drop');
+    if (!dropdown) return [];
+    return Array.from(dropdown.querySelectorAll('li'))
+      .filter(el => el.getBoundingClientRect().height > 0)
+      .map(el => ({ text: el.innerText?.trim().substring(0,20), h: Math.round(el.getBoundingClientRect().height) }))
+      .slice(0, 8);
+  });
+  console.log(`  🔍 LIs visibles:`, JSON.stringify(allLis));
+
+  // Buscar Local
   const localCoords = await page.evaluate(() => {
     const dropdown = document.querySelector('.oj-listbox-drop');
     if (!dropdown) return null;
-    const li = Array.from(dropdown.querySelectorAll('li'))
-      .find(el => el.innerText?.trim() === 'Local' && el.getBoundingClientRect().height > 20);
+    const lis = Array.from(dropdown.querySelectorAll('li'));
+    const li = lis.find(el => el.innerText?.trim() === 'Local' && el.getBoundingClientRect().height > 0);
     if (!li) return null;
     const r = li.getBoundingClientRect();
     return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
