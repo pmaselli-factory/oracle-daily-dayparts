@@ -288,25 +288,25 @@ async function seleccionarTiposDeOrden(page) {
     await page.mouse.click(ulCoords.x, ulCoords.y);
     await sleep(1000);
 
-    // Scroll según la posición de la opción
-    await page.evaluate((scrollToTop) => {
+    // Scroll: al fondo para OT*, al tope para otros
+    await page.evaluate((scrollToBottom) => {
       const dropdown = document.querySelector('.oj-listbox-drop .oj-listbox-results');
-      if (dropdown) dropdown.scrollTop = scrollToTop ? 0 : 99999;
-    }, TOP_OPTIONS.has(ot));
+      if (dropdown) dropdown.scrollTop = scrollToBottom ? 99999 : 0;
+    }, ot.startsWith('OT'));
     await sleep(600);
 
-    // Buscar la opción en el dropdown
+    // Buscar la opción en el dropdown por texto exacto
     const optCoords = await page.evaluate((target) => {
       const dropdown = document.querySelector('.oj-listbox-drop');
       if (!dropdown) return null;
-      const items = Array.from(dropdown.querySelectorAll('[aria-label], li'));
-      const matches = items.filter(el => {
-        const label = el.getAttribute('aria-label') || el.innerText?.trim();
+      // Buscar todos los elementos con el texto exacto
+      const all = Array.from(dropdown.querySelectorAll('li, div, span'));
+      const matches = all.filter(el => {
+        const text = (el.getAttribute('aria-label') || el.innerText || '').trim();
         const rect = el.getBoundingClientRect();
-        return label === target && rect.width > 0 && rect.height > 0;
+        return text === target && rect.width > 0 && rect.height > 20;
       });
       if (matches.length === 0) return null;
-      // Para OT* tomar la última (más abajo), para otros la primera
       const opt = target.startsWith('OT') ? matches[matches.length - 1] : matches[0];
       const r = opt.getBoundingClientRect();
       return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: matches.length };
