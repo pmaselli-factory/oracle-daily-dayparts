@@ -248,68 +248,87 @@ async function configurarTiposDeOrden(page) {
 
 // ── SELECCIONAR TIPOS DE ORDEN EN PARAMETROS ─────────────────
 async function seleccionarTiposDeOrden(page) {
-  // Click "Avanzado" de Tipos de orden
-  await page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll('a, button, span')).filter(el =>
-      el.innerText?.trim() === 'Avanzado' && el.getBoundingClientRect().width > 0
-    );
+  // 1. Click en "Avanzado" de Tipos de orden usando coordenadas reales
+  const advCoords = await page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll('a, button, span'))
+      .filter(el => el.innerText?.trim() === 'Avanzado' && el.getBoundingClientRect().width > 0);
     const byContext = links.find(el => {
       const gp = el.parentElement?.parentElement?.innerText?.trim() || '';
       return gp.includes('Tipos de orden') || gp.includes('Order Type');
     });
-    if (byContext) byContext.click();
-    else if (links[6]) links[6].click();
+    const target = byContext || links[6];
+    if (!target) return null;
+    const r = target.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
   });
+  if (!advCoords) { console.log('  ⚠️ No encontró Avanzado tipos orden'); return; }
+  await page.mouse.click(advCoords.x, advCoords.y);
   await sleep(2000);
 
-  // Seleccionar cada tipo de orden
-  for (const ot of ORDER_TYPES) {
-    // Click en ul.oj-select-choices para abrir dropdown
-    await page.evaluate(() => {
-      const ul = document.querySelector('#order_type_advance_selectMany_report-filter-order-type .oj-select-choices');
-      if (ul) {
-        ul.click();
-        ul.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-        ul.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-      }
+  // 2. Click en ul.oj-select-choices para abrir el dropdown
+  const ulCoords = await page.evaluate(() => {
+    const ul = document.querySelector('#order_type_advance_selectMany_report-filter-order-type .oj-select-choices');
+    if (!ul) return null;
+    const r = ul.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+  });
+  if (!ulCoords) { console.log('  ⚠️ No encontró oj-select-choices'); return; }
+  await page.mouse.click(ulCoords.x, ulCoords.y);
+  await sleep(1500);
+
+  // 3. Clickear todas las opciones visibles EXCEPTO Good Meal
+  // Las opciones están a x=886, desde y=324, cada 48px
+  // Good Meal está en y=372 — lo saltamos
+  const optionCoords = await page.evaluate(() => {
+    const items = Array.from(document.querySelectorAll('[aria-label]'))
+      .filter(el => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
+      .filter(el => {
+        const label = el.getAttribute('aria-label') || '';
+        // Incluir todos menos Good Meal y elementos de navegación
+        return label && label !== 'Good Meal' &&
+          !['Cuadro de diálogo global','Cancelar  ','Aplicar','PM','main wrapper',
+            'pageLevelBreadcrumbs','Page Level Toolbar','Editar parámetros',
+            'Valor por defecto','Fechas de negocio','Ubicaciones','Centros de venta',
+            'Tipos de orden','Artículos de menú','Franjas horarias',
+            'Guía del usuario de Oracle MICROS Reporting and Analytics'].includes(label);
+      });
+    return items.map(el => {
+      const r = el.getBoundingClientRect();
+      return { label: el.getAttribute('aria-label'), x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
     });
-    await sleep(1000);
+  });
+  console.log(`  📋 Opciones a clickear: ${optionCoords.map(o => o.label).join(', ')}`);
 
-    // Escribir para filtrar
-    await page.evaluate((target) => {
-      const input = document.querySelector('.oj-listbox-drop:not([style*="display: none"]) .oj-listbox-input, .oj-listbox-input');
-      if (!input) return;
-      input.focus();
-      input.value = '';
-      for (const ch of target) {
-        input.value += ch;
-        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ch }));
-        input.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: ch }));
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ch }));
-      }
-    }, ot);
-    await sleep(1000);
-
-    // Clickear opción
-    await page.evaluate((target) => {
-      const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
-        .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
-      if (byLabel) { const li = byLabel.closest('li') || byLabel; li.click(); byLabel.click(); return; }
-      const lis = Array.from(document.querySelectorAll('li'))
-        .filter(el => el.getBoundingClientRect().height > 0 && el.innerText?.trim() === target);
-      if (lis.length > 0) lis[0].click();
-    }, ot);
-    await sleep(600);
+  // Clickear cada opción con mouse real — el dropdown se cierra y reabre
+  const seen = new Set();
+  for (const opt of optionCoords) {
+    const key = `${opt.label}-${opt.y}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await page.mouse.click(opt.x, opt.y);
+    console.log(`  📌 Click en ${opt.label} (${opt.x}, ${opt.y})`);
+    await sleep(800);
+    // Reabrir dropdown si se cerró
+    await page.mouse.click(ulCoords.x, ulCoords.y);
+    await sleep(800);
   }
 
-  // Click "Aplicar" en el modal de tipos de orden
-  await page.evaluate(() => {
+  // 4. Click "Aplicar"
+  const applyCoords = await page.evaluate(() => {
     const btns = Array.from(document.querySelectorAll('button'));
     const apply = btns.find(b => b.innerText?.trim() === 'Aplicar' || b.innerText?.trim() === 'Apply');
-    if (apply) apply.click();
+    if (!apply) return null;
+    const r = apply.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
   });
-  await sleep(1500);
+  if (applyCoords) {
+    await page.mouse.click(applyCoords.x, applyCoords.y);
+    await sleep(1500);
+    console.log('  ✅ Aplicar clickeado');
+  }
 }
 
 // ── SELECCIONAR CENTRO Y EJECUTAR ─────────────────────────────
