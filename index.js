@@ -72,7 +72,8 @@ async function login(page) {
 // ── SELECCIONAR OPCIÓN EN SEARCHSELECT ────────────────────────
 // Oracle JET oj-searchselect: click input → escribir → esperar dropdown → click opción
 async function selectSearchOption(page, inputId, optionText) {
-  const input = page.locator(`#${CSS.escape(inputId)}`);
+  // Use attribute selector to avoid CSS.escape issues
+  const input = page.locator(`[id="${inputId}"]`);
   await input.waitFor({ timeout: 8000 });
 
   // Click para abrir el dropdown
@@ -82,13 +83,12 @@ async function selectSearchOption(page, inputId, optionText) {
   // Limpiar y escribir el texto para filtrar
   await input.fill('');
   await input.type(optionText.substring(0, 4), { delay: 100 });
-  await sleep(1000);
+  await sleep(1500);
 
   // Buscar y clickear la opción en el dropdown
   const clicked = await page.evaluate((text) => {
-    // Buscar en el dropdown abierto
     const opts = Array.from(document.querySelectorAll(
-      '[role="option"], .oj-listbox-result-selectable, .oj-searchselect-option'
+      '[role="option"], .oj-listbox-result-selectable, .oj-searchselect-option, [class*="oj-listview-item"]'
     ));
     const opt = opts.find(o =>
       o.innerText?.trim() === text ||
@@ -96,7 +96,7 @@ async function selectSearchOption(page, inputId, optionText) {
     );
     if (opt) { opt.click(); return { clicked: true, text: opt.innerText?.trim() }; }
 
-    // Fallback: buscar divs con aria-label
+    // Fallback: buscar por aria-label visible
     const divs = Array.from(document.querySelectorAll('[aria-label]'));
     const d = divs.find(el =>
       el.getAttribute('aria-label') === text &&
@@ -104,7 +104,8 @@ async function selectSearchOption(page, inputId, optionText) {
     );
     if (d) { d.click(); return { clicked: true, byLabel: true }; }
 
-    return { clicked: false, available: opts.map(o => o.innerText?.trim()).slice(0,10) };
+    // Debug: mostrar opciones disponibles
+    return { clicked: false, available: opts.map(o => o.innerText?.trim() || o.getAttribute('aria-label')).filter(Boolean).slice(0,10) };
   }, optionText);
 
   await sleep(500);
@@ -157,33 +158,36 @@ async function configurarTiposDeOrden(page) {
   });
   await sleep(500);
 
-  // Seleccionar cada tipo de orden usando el searchselect del modal
-  for (const ot of ORDER_TYPES) {
-    // Abrir el desplegable clickeando el área de selección
-    const opened = await page.evaluate(() => {
-      const triggers = Array.from(document.querySelectorAll(
-        '.oj-listbox-choice, .oj-select-chosen, [class*="oj-searchselect"]'
-      )).filter(el => el.getBoundingClientRect().width > 0);
-      if (triggers[0]) { triggers[0].click(); return true; }
-      return false;
-    });
-    await sleep(800);
+  // Seleccionar cada tipo de orden en el modal avanzado
+  // El modal avanzado tiene un oj-select-many o listbox
+  // Primero ver qué hay disponible
+  const availableTypes = await page.evaluate(() => {
+    const allEls = Array.from(document.querySelectorAll('[aria-label], .oj-listbox-result-selectable, [role="option"], li'));
+    return allEls
+      .filter(el => el.getBoundingClientRect().width > 0)
+      .map(el => ({ tag: el.tagName, label: el.getAttribute('aria-label'), text: el.innerText?.trim().substring(0,40) }))
+      .filter(el => el.label || el.text)
+      .slice(0, 20);
+  });
+  console.log('🔍 Elementos disponibles en modal:', JSON.stringify(availableTypes));
 
-    // Clickear la opción por aria-label o texto
+  for (const ot of ORDER_TYPES) {
+    // Buscar el elemento con el nombre del tipo de orden y clickearlo
     const result = await page.evaluate((target) => {
-      const allEls = Array.from(document.querySelectorAll(
-        '[aria-label], .oj-listbox-result-selectable, [role="option"]'
-      ));
-      const opt = allEls.find(el => {
-        const label = el.getAttribute('aria-label') || el.innerText?.trim();
-        const rect = el.getBoundingClientRect();
-        return label === target && rect.width > 0;
-      });
-      if (opt) { opt.click(); return { clicked: true, text: opt.getAttribute('aria-label') || opt.innerText?.trim() }; }
+      // Intentar por aria-label
+      const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
+        .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
+      if (byLabel) { byLabel.click(); return { clicked: true, method: 'aria-label' }; }
+
+      // Intentar por texto exacto en li/div/span visibles
+      const byText = Array.from(document.querySelectorAll('li, div, span, td'))
+        .find(el => el.innerText?.trim() === target && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
+      if (byText) { byText.click(); return { clicked: true, method: 'text', tag: byText.tagName }; }
+
       return { clicked: false };
     }, ot);
     console.log(`  📌 ${ot}:`, result);
-    await sleep(600);
+    await sleep(800);
   }
 
   // Click en "Aplicar"
