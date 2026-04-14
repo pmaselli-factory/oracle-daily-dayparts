@@ -268,16 +268,35 @@ async function seleccionarTiposDeOrden(page) {
   await page.mouse.click(advCoords.x, advCoords.y);
   await sleep(2000);
 
-  // 2. Click en ul.oj-select-choices para abrir el dropdown
-  const ulCoords = await page.evaluate(() => {
-    const ul = document.querySelector('#order_type_advance_selectMany_report-filter-order-type .oj-select-choices');
-    if (!ul) return null;
-    const r = ul.getBoundingClientRect();
-    return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
-  });
-  if (!ulCoords) { console.log('  ⚠️ No encontró oj-select-choices'); return; }
+  // 2. Esperar a que el modal esté visible y clickear el ul
+  let ulCoords = null;
+  for (let i = 0; i < 10; i++) {
+    ulCoords = await page.evaluate(() => {
+      const ul = document.querySelector('#order_type_advance_selectMany_report-filter-order-type .oj-select-choices');
+      if (!ul) return null;
+      const r = ul.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return null;
+      return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), w: Math.round(r.width) };
+    });
+    if (ulCoords) break;
+    console.log(`  ⏳ Esperando ul... intento ${i+1}`);
+    await sleep(1000);
+  }
+  if (!ulCoords) {
+    // Tomar screenshot para ver qué hay en pantalla
+    await page.screenshot({ path: 'debug-types-modal.png', fullPage: false });
+    // Log qué hay en el DOM
+    const domState = await page.evaluate(() => ({
+      bodyText: document.body.innerText.substring(0, 300),
+      hasSelectMany: !!document.getElementById('order_type_advance_selectMany_report-filter-order-type'),
+      dialogsVisible: Array.from(document.querySelectorAll('[role="dialog"]')).filter(d => d.getBoundingClientRect().width > 0).length
+    }));
+    console.log('  ⚠️ No encontró ul. Estado DOM:', JSON.stringify(domState));
+    return;
+  }
+  console.log(`  🔍 ulCoords: (${ulCoords.x}, ${ulCoords.y}) w=${ulCoords.w}`);
   await page.mouse.click(ulCoords.x, ulCoords.y);
-  await sleep(1500);
+  await sleep(2500);
 
   // 3. Abrir dropdown y mapear TODAS las opciones de una vez
   // Luego clickear las que necesitamos (sin cerrar/reabrir entre cada una)
