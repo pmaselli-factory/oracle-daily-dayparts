@@ -247,8 +247,11 @@ async function configurarTiposDeOrden(page) {
 }
 
 // ── SELECCIONAR TIPOS DE ORDEN EN PARAMETROS ─────────────────
+// Solo se llama UNA VEZ — con parámetros ya abiertos
 async function seleccionarTiposDeOrden(page) {
-  // 1. Click en "Avanzado" de Tipos de orden usando coordenadas reales
+  const VALID_ORDER_TYPES = new Set(['CornerShop', 'Local', 'OT17578', 'OT17579', 'OT17580']);
+
+  // 1. Click en "Avanzado" de Tipos de orden
   const advCoords = await page.evaluate(() => {
     const links = Array.from(document.querySelectorAll('a, button, span'))
       .filter(el => el.innerText?.trim() === 'Avanzado' && el.getBoundingClientRect().width > 0);
@@ -276,47 +279,45 @@ async function seleccionarTiposDeOrden(page) {
   await page.mouse.click(ulCoords.x, ulCoords.y);
   await sleep(1500);
 
-  // 3. Clickear todas las opciones visibles EXCEPTO Good Meal
-  // Las opciones están a x=886, desde y=324, cada 48px
-  // Good Meal está en y=372 — lo saltamos
-  const optionCoords = await page.evaluate(() => {
-    const items = Array.from(document.querySelectorAll('[aria-label]'))
-      .filter(el => {
+  // 3. Clickear SOLO las opciones válidas (CornerShop, Local, OT17578, OT17579, OT17580)
+  // usando aria-label exacto dentro del dropdown abierto
+  for (const ot of VALID_ORDER_TYPES) {
+    // Buscar la opción con aria-label exacto dentro del dropdown
+    const optCoords = await page.evaluate((target) => {
+      // El dropdown abierto es .oj-listbox-drop — buscar dentro de él
+      const dropdown = document.querySelector('.oj-listbox-drop');
+      if (!dropdown) return null;
+      const items = Array.from(dropdown.querySelectorAll('[aria-label], li, div'));
+      const opt = items.find(el => {
+        const label = el.getAttribute('aria-label') || el.innerText?.trim();
         const rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      })
-      .filter(el => {
-        const label = el.getAttribute('aria-label') || '';
-        // Incluir todos menos Good Meal y elementos de navegación
-        return label && label !== 'Good Meal' &&
-          !['Cuadro de diálogo global','Cancelar  ','Aplicar','PM','main wrapper',
-            'pageLevelBreadcrumbs','Page Level Toolbar','Editar parámetros',
-            'Valor por defecto','Fechas de negocio','Ubicaciones','Centros de venta',
-            'Tipos de orden','Artículos de menú','Franjas horarias',
-            'Guía del usuario de Oracle MICROS Reporting and Analytics'].includes(label);
+        return label === target && rect.width > 0 && rect.height > 0;
       });
-    return items.map(el => {
-      const r = el.getBoundingClientRect();
-      return { label: el.getAttribute('aria-label'), x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
-    });
-  });
-  console.log(`  📋 Opciones a clickear: ${optionCoords.map(o => o.label).join(', ')}`);
+      if (!opt) return null;
+      const r = opt.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+    }, ot);
 
-  // Clickear cada opción con mouse real — el dropdown se cierra y reabre
-  const seen = new Set();
-  for (const opt of optionCoords) {
-    const key = `${opt.label}-${opt.y}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    await page.mouse.click(opt.x, opt.y);
-    console.log(`  📌 Click en ${opt.label} (${opt.x}, ${opt.y})`);
-    await sleep(800);
-    // Reabrir dropdown si se cerró
-    await page.mouse.click(ulCoords.x, ulCoords.y);
-    await sleep(800);
+    if (optCoords) {
+      await page.mouse.click(optCoords.x, optCoords.y);
+      console.log(`  📌 ${ot}: (${optCoords.x}, ${optCoords.y})`);
+      await sleep(800);
+      // Reabrir dropdown para siguiente opción
+      await page.mouse.click(ulCoords.x, ulCoords.y);
+      await sleep(800);
+    } else {
+      console.log(`  ⚠️ No encontró ${ot} en dropdown`);
+      // Reabrir de todas formas
+      await page.mouse.click(ulCoords.x, ulCoords.y);
+      await sleep(800);
+    }
   }
 
-  // 4. Click "Aplicar"
+  // 4. Cerrar dropdown presionando Escape
+  await page.keyboard.press('Escape');
+  await sleep(500);
+
+  // 5. Click "Aplicar"
   const applyCoords = await page.evaluate(() => {
     const btns = Array.from(document.querySelectorAll('button'));
     const apply = btns.find(b => b.innerText?.trim() === 'Aplicar' || b.innerText?.trim() === 'Apply');
@@ -327,12 +328,12 @@ async function seleccionarTiposDeOrden(page) {
   if (applyCoords) {
     await page.mouse.click(applyCoords.x, applyCoords.y);
     await sleep(1500);
-    console.log('  ✅ Aplicar clickeado');
+    console.log('  ✅ Tipos de orden aplicados');
   }
 }
 
 // ── SELECCIONAR CENTRO Y EJECUTAR ─────────────────────────────
-async function seleccionarCentroYEjecutar(page, centro) {
+async function seleccionarCentroYEjecutar(page, centro, configurarOrden) {
   console.log(`🏪 Centro: ${centro}`);
 
   await abrirParametros(page);
@@ -341,9 +342,10 @@ async function seleccionarCentroYEjecutar(page, centro) {
   const result = await selectSearchOption(page, 'search_rvc_select|input', centro);
   console.log(`  RVC set:`, result);
 
-  // 2. Configurar tipos de orden (cada vez para que no se resetee)
-  await seleccionarTiposDeOrden(page);
-  console.log(`  ✅ Tipos de orden aplicados`);
+  // 2. Configurar tipos de orden solo la primera vez
+  if (configurarOrden) {
+    await seleccionarTiposDeOrden(page);
+  }
 
   // 3. Ejecutar
   await page.evaluate(() => {
@@ -419,9 +421,10 @@ async function run() {
     console.log('✅ Reporte abierto');
 
     // Iterar centros de venta (tipos de orden se configuran en cada iteración)
-    for (const centro of CENTROS) {
+    for (let i = 0; i < CENTROS.length; i++) {
+      const centro = CENTROS[i];
       console.log(`\n━━━ ${centro} ━━━`);
-      await seleccionarCentroYEjecutar(page, centro);
+      await seleccionarCentroYEjecutar(page, centro, i === 0); // tipos de orden solo en primera iteración
       const fileName = `dayparts_${safeName(centro)}_${weekLabel}.xlsx`;
       const filePath = await downloadExcel(page, fileName);
       downloadedFiles.push({ filePath, name: fileName });
