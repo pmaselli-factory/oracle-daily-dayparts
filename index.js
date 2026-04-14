@@ -295,21 +295,34 @@ async function seleccionarTiposDeOrden(page) {
     }, ot.startsWith('OT'));
     await sleep(600);
 
-    // Buscar la opción en el dropdown por texto exacto
+    // Buscar la opción en el dropdown — priorizar LI con texto exacto
     const optCoords = await page.evaluate((target) => {
       const dropdown = document.querySelector('.oj-listbox-drop');
       if (!dropdown) return null;
-      // Buscar todos los elementos con el texto exacto
-      const all = Array.from(dropdown.querySelectorAll('li, div, span'));
-      const matches = all.filter(el => {
-        const text = (el.getAttribute('aria-label') || el.innerText || '').trim();
+
+      // Buscar LI primero (elemento clickeable real)
+      const lis = Array.from(dropdown.querySelectorAll('li')).filter(el => {
         const rect = el.getBoundingClientRect();
-        return text === target && rect.width > 0 && rect.height > 20;
+        return el.innerText?.trim() === target && rect.width > 0 && rect.height > 20;
       });
-      if (matches.length === 0) return null;
-      const opt = target.startsWith('OT') ? matches[matches.length - 1] : matches[0];
-      const r = opt.getBoundingClientRect();
-      return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: matches.length };
+      if (lis.length > 0) {
+        const opt = target.startsWith('OT') ? lis[lis.length - 1] : lis[0];
+        const r = opt.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: lis.length, method: 'li' };
+      }
+
+      // Fallback: div con aria-label
+      const divs = Array.from(dropdown.querySelectorAll('[aria-label]')).filter(el => {
+        const rect = el.getBoundingClientRect();
+        return el.getAttribute('aria-label') === target && rect.width > 0 && rect.height > 0;
+      });
+      if (divs.length > 0) {
+        const opt = target.startsWith('OT') ? divs[divs.length - 1] : divs[0];
+        const r = opt.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: divs.length, method: 'div' };
+      }
+
+      return null;
     }, ot);
 
     if (optCoords) {
