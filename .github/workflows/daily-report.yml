@@ -1,0 +1,44 @@
+name: Reporte Semanal Dayparts
+
+on:
+  schedule:
+    # Domingos 23:00 hora Chile invierno (UTC-4) = lunes 03:00 UTC
+    - cron: '0 3 * * 1'
+  
+  workflow_dispatch:
+
+jobs:
+  download-and-send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Instalar Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Correr script dayparts
+        env:
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          ORACLE_PASSWORD: ${{ secrets.ORACLE_PASSWORD }}
+          ORACLE_ENTERPRISE: ${{ secrets.ORACLE_ENTERPRISE }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: node index.js
+
+      - name: Guardar screenshot si hay error
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-screenshot-dayparts
+          path: error-screenshot-dayparts.png
+          retention-days: 3
