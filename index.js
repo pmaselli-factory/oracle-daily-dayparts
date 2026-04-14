@@ -171,19 +171,27 @@ async function configurarTiposDeOrden(page) {
 
   // El modal de tipos de orden tiene un searchselect — necesitamos abrirlo y seleccionar
   // Usamos el mismo patrón del otro reporte: abrir dropdown y clickear por aria-label
-  // El modal de tipos de orden usa oj-listbox-input como campo de búsqueda
-  // Escribir en él filtra las opciones que aparecen como LI con oj-listbox-result-label
+  // El oj-select-many tiene un ul.oj-select-choices que al clickearse abre el dropdown
+  // El dropdown es oj-listbox-drop con un oj-listbox-input para buscar
+  // y los resultados son LI con aria-label
   for (const ot of ORDER_TYPES) {
-    // Escribir en el input de búsqueda del modal
+    // 1. Click en el ul.oj-select-choices para abrir el dropdown
+    await page.evaluate(() => {
+      const ul = document.querySelector('#order_type_advance_selectMany_report-filter-order-type .oj-select-choices');
+      if (ul) {
+        ul.click();
+        ul.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        ul.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      }
+    });
+    await sleep(1200);
+
+    // 2. Escribir en el oj-listbox-input para filtrar
     await page.evaluate((target) => {
-      const input = document.querySelector('.oj-listbox-input');
+      const input = document.querySelector('.oj-listbox-drop:not([style*="display: none"]) .oj-listbox-input, .oj-listbox-input');
       if (!input) return;
       input.focus();
-      input.click();
-      // Limpiar y escribir
       input.value = '';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      // Simular escritura carácter por carácter
       for (const ch of target) {
         input.value += ch;
         input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ch }));
@@ -192,15 +200,14 @@ async function configurarTiposDeOrden(page) {
         input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ch }));
       }
     }, ot);
-    await sleep(1500);
+    await sleep(1200);
 
-    // Clickear el LI que apareció con oj-listbox-result-label
+    // 3. Clickear la opción filtrada
     const result = await page.evaluate((target) => {
-      // Buscar en el listbox de Oracle por aria-label (como vimos antes)
+      // Buscar en el dropdown abierto por aria-label
       const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
         .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
       if (byLabel) {
-        // Click en el LI padre
         const li = byLabel.closest('li') || byLabel;
         li.click();
         byLabel.click();
@@ -210,7 +217,6 @@ async function configurarTiposDeOrden(page) {
       const lis = Array.from(document.querySelectorAll('li'))
         .filter(el => el.getBoundingClientRect().height > 0 && el.innerText?.trim() === target);
       if (lis.length > 0) { lis[0].click(); return { clicked: true, method: 'li-text' }; }
-
       // Debug
       const available = Array.from(document.querySelectorAll('li'))
         .filter(el => el.getBoundingClientRect().height > 0)
@@ -218,16 +224,7 @@ async function configurarTiposDeOrden(page) {
       return { clicked: false, available };
     }, ot);
     console.log(`  📌 ${ot}:`, result);
-
-    // Limpiar el input para la siguiente búsqueda
-    await page.evaluate(() => {
-      const input = document.querySelector('.oj-listbox-input');
-      if (input) {
-        input.value = '';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-    });
-    await sleep(600);
+    await sleep(800);
   }
 
   // Click en "Aplicar"
