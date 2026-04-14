@@ -280,36 +280,42 @@ async function seleccionarTiposDeOrden(page) {
   await sleep(1500);
 
   // 3. Clickear SOLO las opciones válidas (CornerShop, Local, OT17578, OT17579, OT17580)
-  // usando aria-label exacto dentro del dropdown abierto
   for (const ot of VALID_ORDER_TYPES) {
-    // Buscar la opción con aria-label exacto dentro del dropdown
+    // Abrir dropdown
+    await page.mouse.click(ulCoords.x, ulCoords.y);
+    await sleep(1000);
+
+    // Scroll al fondo del dropdown para asegurarnos de ver todas las opciones
+    await page.evaluate(() => {
+      const dropdown = document.querySelector('.oj-listbox-drop .oj-listbox-results');
+      if (dropdown) dropdown.scrollTop = 99999;
+    });
+    await sleep(500);
+
+    // Buscar la ÚLTIMA ocurrencia visible del aria-label en el dropdown
+    // (porque OT17578/17579/17580 tienen múltiples filas — clickeamos la última)
     const optCoords = await page.evaluate((target) => {
-      // El dropdown abierto es .oj-listbox-drop — buscar dentro de él
       const dropdown = document.querySelector('.oj-listbox-drop');
       if (!dropdown) return null;
-      const items = Array.from(dropdown.querySelectorAll('[aria-label], li, div'));
-      const opt = items.find(el => {
+      const items = Array.from(dropdown.querySelectorAll('[aria-label], li'));
+      const matches = items.filter(el => {
         const label = el.getAttribute('aria-label') || el.innerText?.trim();
         const rect = el.getBoundingClientRect();
         return label === target && rect.width > 0 && rect.height > 0;
       });
-      if (!opt) return null;
+      if (matches.length === 0) return null;
+      // Tomar la última coincidencia visible
+      const opt = matches[matches.length - 1];
       const r = opt.getBoundingClientRect();
-      return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+      return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), count: matches.length };
     }, ot);
 
     if (optCoords) {
       await page.mouse.click(optCoords.x, optCoords.y);
-      console.log(`  📌 ${ot}: (${optCoords.x}, ${optCoords.y})`);
-      await sleep(800);
-      // Reabrir dropdown para siguiente opción
-      await page.mouse.click(ulCoords.x, ulCoords.y);
+      console.log(`  📌 ${ot}: (${optCoords.x}, ${optCoords.y}) [${optCoords.count} coincidencias]`);
       await sleep(800);
     } else {
       console.log(`  ⚠️ No encontró ${ot} en dropdown`);
-      // Reabrir de todas formas
-      await page.mouse.click(ulCoords.x, ulCoords.y);
-      await sleep(800);
     }
   }
 
