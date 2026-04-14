@@ -171,57 +171,63 @@ async function configurarTiposDeOrden(page) {
 
   // El modal de tipos de orden tiene un searchselect — necesitamos abrirlo y seleccionar
   // Usamos el mismo patrón del otro reporte: abrir dropdown y clickear por aria-label
-  // Ver qué inputs y elementos hay en el modal de tipos de orden
-  const modalInputs = await page.evaluate(() => {
-    const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
-      .filter(el => el.getBoundingClientRect().width > 0)
-      .map(el => ({ id: el.id, w: Math.round(el.getBoundingClientRect().width) }));
-    // También buscar el botón "Seleccionar tipos de orden" u otro trigger
-    const triggers = Array.from(document.querySelectorAll('button, a, [role="button"]'))
-      .filter(el => el.getBoundingClientRect().width > 0 && el.innerText?.trim())
-      .map(el => ({ tag: el.tagName, text: el.innerText?.trim().substring(0,50), id: el.id }))
-      .filter(el => !['Cerrar','Cancelar','Aplicar','Ejecutar','Editar parámetros','Valor por defecto','Navegación de aplicación'].includes(el.text));
-    return { inputs, triggers: triggers.slice(0, 10) };
-  });
-  console.log('🔍 Modal tipos orden estado:', JSON.stringify(modalInputs));
-
-  // The order types advanced modal uses a listbox — open it and select options
-  // Try to find and click the input/trigger for the order type selector
+  // El modal de tipos de orden usa oj-listbox-input como campo de búsqueda
+  // Escribir en él filtra las opciones que aparecen como LI con oj-listbox-result-label
   for (const ot of ORDER_TYPES) {
-    // Open the dropdown — click the last visible combobox input (the one in the modal)
-    await page.evaluate(() => {
-      const inputs = Array.from(document.querySelectorAll('input[role="combobox"]'))
-        .filter(el => el.getBoundingClientRect().width > 0);
-      const last = inputs[inputs.length - 1];
-      if (last) {
-        last.focus();
-        last.click();
-        last.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-        last.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-        last.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    // Escribir en el input de búsqueda del modal
+    await page.evaluate((target) => {
+      const input = document.querySelector('.oj-listbox-input');
+      if (!input) return;
+      input.focus();
+      input.click();
+      // Limpiar y escribir
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      // Simular escritura carácter por carácter
+      for (const ch of target) {
+        input.value += ch;
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ch }));
+        input.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: ch }));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ch }));
       }
-    });
-    await sleep(1200);
+    }, ot);
+    await sleep(1500);
 
-    // Click the option
+    // Clickear el LI que apareció con oj-listbox-result-label
     const result = await page.evaluate((target) => {
-      // Look for oj-listview items (same as RVC dropdown)
-      const lis = Array.from(document.querySelectorAll('.oj-listview-item-element, li'))
-        .filter(el => el.getBoundingClientRect().height > 0 && el.innerText?.trim() === target);
-      if (lis.length > 0) { lis[0].click(); return { clicked: true, method: 'listview' }; }
-
-      // Also try aria-label
+      // Buscar en el listbox de Oracle por aria-label (como vimos antes)
       const byLabel = Array.from(document.querySelectorAll('[aria-label]'))
         .find(el => el.getAttribute('aria-label') === target && el.getBoundingClientRect().width > 0);
-      if (byLabel) { byLabel.click(); return { clicked: true, method: 'aria-label' }; }
+      if (byLabel) {
+        // Click en el LI padre
+        const li = byLabel.closest('li') || byLabel;
+        li.click();
+        byLabel.click();
+        return { clicked: true, method: 'aria-label' };
+      }
+      // Buscar LI visible con texto exacto
+      const lis = Array.from(document.querySelectorAll('li'))
+        .filter(el => el.getBoundingClientRect().height > 0 && el.innerText?.trim() === target);
+      if (lis.length > 0) { lis[0].click(); return { clicked: true, method: 'li-text' }; }
 
-      const available = Array.from(document.querySelectorAll('.oj-listview-item-element, li'))
+      // Debug
+      const available = Array.from(document.querySelectorAll('li'))
         .filter(el => el.getBoundingClientRect().height > 0)
         .map(el => el.innerText?.trim()).filter(Boolean).slice(0, 10);
       return { clicked: false, available };
     }, ot);
     console.log(`  📌 ${ot}:`, result);
-    await sleep(800);
+
+    // Limpiar el input para la siguiente búsqueda
+    await page.evaluate(() => {
+      const input = document.querySelector('.oj-listbox-input');
+      if (input) {
+        input.value = '';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await sleep(600);
   }
 
   // Click en "Aplicar"
