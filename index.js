@@ -36,14 +36,40 @@ const ORDER_TYPES = ['Local', 'OT17578', 'OT17579', 'OT17580'];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+/**
+ * Offset de Chile en minutos según DST:
+ *   Invierno (abr-sep): UTC-4 -> -240
+ *   Verano  (oct-mar): UTC-3 -> -180
+ */
+function getChileOffsetMinutes() {
+  const utcMonth = new Date().getUTCMonth() + 1;
+  return (utcMonth >= 4 && utcMonth <= 9) ? -4 * 60 : -3 * 60;
+}
+
 function getChileDate() {
   const now = new Date();
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-  return new Date(utcMs + (-4 * 60) * 60000);
+  return new Date(utcMs + getChileOffsetMinutes() * 60000);
+}
+
+/**
+ * Retorna el domingo mas reciente en hora Chile.
+ *
+ * GitHub Actions puede disparar este cron con hasta 60-90 min de delay,
+ * por lo que el script podria correr el lunes de madrugada hora Chile.
+ * En vez de usar "hoy", siempre buscamos el ultimo domingo — asi el
+ * nombre del archivo y la fecha del reporte siempre coinciden.
+ */
+function getLastSunday() {
+  const chile = getChileDate();
+  const dayOfWeek = chile.getDay(); // 0=domingo, 1=lunes, ...
+  // Si es domingo: retornar hoy. Si es lunes (1): retornar ayer (domingo).
+  chile.setDate(chile.getDate() - dayOfWeek);
+  return chile;
 }
 
 function getWeekLabel() {
-  const d = getChileDate();
+  const d = getLastSunday();
   return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
 }
 
