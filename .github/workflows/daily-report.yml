@@ -2,8 +2,13 @@ name: Reporte Semanal Dayparts
 
 on:
   schedule:
-    # Domingos 23:00 hora Chile invierno (UTC-4) = lunes 03:00 UTC
-    - cron: '0 3 * * 1'
+    # Objetivo: ejecutar domingos ~23:00 hora Chile
+    # Chile invierno (UTC-4): 23:00 = lunes 03:00 UTC
+    # Chile verano  (UTC-3): 23:00 = lunes 02:00 UTC
+    # GitHub Actions puede demorar hasta 90 min -> programar domingo 01:00 UTC
+    # (= domingo 21:00 Chile invierno), y el script calcula el ultimo domingo
+    # como fecha de referencia aunque corra con delay en lunes madrugada.
+    - cron: '0 1 * * 1'
   
   workflow_dispatch:
 
