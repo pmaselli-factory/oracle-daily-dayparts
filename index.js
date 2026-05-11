@@ -73,6 +73,11 @@ function getWeekLabel() {
   return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
 }
 
+// Calcula el timestamp UTC (ms) para un objeto Date — usado para dp{id} del calendario
+function getDateTimestamp(date) {
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
 function safeName(str) {
   return str
     .replace(/Ñ/g,'N').replace(/ñ/g,'n')
@@ -132,18 +137,100 @@ async function selectSearchOption(page, inputId, optionText) {
 }
 
 // ── ABRIR MODAL DE PARÁMETROS ─────────────────────────────────
+// Navega al reporte desde cero para garantizar estado limpio del modal
 async function abrirParametros(page) {
+  await page.goto(REPORT_URL, { waitUntil: 'networkidle' });
+  await sleep(3000);
   await page.evaluate(() => {
     document.querySelectorAll('.oj-dialog-layer, .oj-component-overlay').forEach(el => {
       el.style.display = 'none';
     });
   });
   await sleep(500);
-
   const editBtn = page.locator('[aria-label="Editar parámetros"], [aria-label="Edit parameters"]').first();
   await editBtn.waitFor({ timeout: 10000 });
   await editBtn.evaluate(el => el.click());
   await sleep(2000);
+}
+
+// ── SELECCIONAR FECHA EN CALENDARIO ──────────────────────────
+// Abre el calendario avanzado y selecciona el domingo específico por dp{timestamp}
+async function seleccionarFecha(page, date) {
+  const label = `${String(date.getDate()).padStart(2,'0')}-${String(date.getMonth()+1).padStart(2,'0')}-${date.getFullYear()}`;
+  console.log(`📅 Seleccionando fecha: ${label}...`);
+
+  await abrirParametros(page);
+
+  // Abrir calendario avanzado (primer Avanzado = Fechas de negocio)
+  await page.evaluate(() => {
+    const link = document.getElementById('businessDateFilter_href_link');
+    if (link) {
+      link.removeAttribute('hidden');
+      link.style.display = ''; link.style.visibility = 'visible';
+      link.click();
+    } else {
+      const advLinks = Array.from(document.querySelectorAll('a'))
+        .filter(el => el.innerText?.trim() === 'Avanzado' && el.getBoundingClientRect().width > 0);
+      if (advLinks[0]) advLinks[0].click();
+    }
+  });
+  await sleep(3000);
+
+  // Hacer dialogs visibles
+  await page.evaluate(() => {
+    document.querySelectorAll('[id*="dialog"], [class*="dialog"], [role="dialog"]').forEach(d => {
+      d.style.display = 'block'; d.style.visibility = 'visible'; d.style.opacity = '1';
+      d.style.position = 'fixed'; d.style.top = '0'; d.style.left = '0';
+      d.style.zIndex = '99999'; d.style.transform = 'none'; d.style.overflow = 'visible';
+    });
+  });
+  await sleep(500);
+
+  // Cambiar año si es necesario
+  const targetYear = date.getFullYear();
+  const yearResult = await page.evaluate((yr) => {
+    const selects = Array.from(document.querySelectorAll('select'));
+    const yearSel = selects.find(s => Array.from(s.options).some(o => o.text.trim() === String(yr)));
+    if (!yearSel) return { found: false };
+    const current = yearSel.options[yearSel.selectedIndex]?.text?.trim();
+    if (current === String(yr)) return { found: true, changed: false };
+    const opt = Array.from(yearSel.options).find(o => o.text.trim() === String(yr));
+    if (!opt) return { found: false };
+    yearSel.value = opt.value;
+    yearSel.dispatchEvent(new Event('change', { bubbles: true }));
+    yearSel.dispatchEvent(new Event('input',  { bubbles: true }));
+    return { found: true, changed: true };
+  }, targetYear);
+  console.log(`  🔍 Año: ${JSON.stringify(yearResult)}`);
+  if (yearResult.changed) await sleep(3000);
+
+  // Click en el día por dp{timestamp}
+  const ts = getDateTimestamp(date);
+  const dayId = `dp${ts}`;
+  console.log(`  🔍 Buscando id="${dayId}"...`);
+
+  const dayClicked = await page.evaluate((id) => {
+    const el = document.getElementById(id);
+    if (!el) {
+      const available = Array.from(document.querySelectorAll('[id^="dp"]')).map(e => e.id).slice(0, 5);
+      return { found: false, available };
+    }
+    el.click();
+    return { found: true, id: el.id, text: el.innerText?.trim() };
+  }, dayId);
+  console.log(`  🔍 Día click: ${JSON.stringify(dayClicked)}`);
+
+  if (!dayClicked.found) throw new Error(`No se encontró celda del calendario para ${label} (id=${dayId})`);
+  await sleep(1000);
+
+  // Aplicar
+  await page.evaluate(() => {
+    const apply = Array.from(document.querySelectorAll('button'))
+      .find(b => b.innerText?.trim() === 'Aplicar' || b.innerText?.trim() === 'Apply');
+    if (apply) apply.click();
+  });
+  await sleep(2000);
+  console.log(`  ✅ Fecha ${label} aplicada`);
 }
 
 // ── CONFIGURAR TIPOS DE ORDEN (solo primera vez) ──────────────
@@ -516,6 +603,10 @@ async function run() {
     await page.goto(REPORT_URL, { waitUntil: 'networkidle' });
     await sleep(4000);
     console.log('✅ Reporte abierto');
+
+    // Seleccionar el domingo correcto en el calendario antes de iterar centros
+    const sunday = getLastSunday();
+    await seleccionarFecha(page, sunday);
 
     // Iterar centros de venta (tipos de orden se configuran en cada iteración)
     for (let i = 0; i < CENTROS.length; i++) {
